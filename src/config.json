@@ -4,7 +4,7 @@
   "authUrlV2Template": "https://{customer}.polaris.synopsys.com/api/auth/v2/authenticate",
   "setPropertyUrlTemplate": "https://{customer}.polaris.synopsys.com/api/common/async/v0/projects/batch/set-property",
   "projectsUrlTemplate": "https://{customer}.polaris.synopsys.com/api/common/v0/projects?page%5Blimit%5D=5&page%5Boffset%5D=0",
-  "email": "email@acme.com",
-  "password": "mypassword",
-  "accesstoken": "enterapikey"
+  "email": "emailaddress",
+  "password": "password",
+  "accesstoken": "accesstoken"
 }
