@@ -51,6 +51,8 @@
  *                  -- Addition of pulling group information for all users.   There are three files created
  *                     (grouplist.json, userlist.json, userlist.csv)
  * 
+ * 
+ * 
  * ==========================================================================================================
  */
 
@@ -62,7 +64,7 @@ import { createObjectCsvWriter } from 'csv-writer';
 
 const configPath = './config.json';
 const projectListPath = './projectList.json';
-const csvPath = './projectList.csv';
+const csvPath = './projectDetails.csv';
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -73,65 +75,50 @@ const askQuestion = (query) => {
   return new Promise((resolve) => rl.question(query, resolve));
 };
 
+const fileExists = async (path) => {
+  try {
+    await fs.access(path);
+    return true;
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      return false;
+    }
+    throw err;
+  }
+};
+
+const deleteFileIfExists = async (path, message) => {
+  if (await fileExists(path)) {
+    const answer = await askQuestion(`${message} Do you want to delete it? [ yes | no ]: `);
+    if (!['yes', 'y'].includes(answer.toLowerCase())) {
+      console.log('Exiting script without making changes.');
+      rl.close();
+      return false;
+    }
+    await fs.unlink(path);
+    console.log(`Existing ${path} file deleted.`);
+  }
+  return true;
+};
+
 const fetchProjectsWithAuth = async () => {
   try {
-    // Check if projectList.json already exists
-    let fileExists = false;
-    try {
-      await fs.access(projectListPath);
-      fileExists = true;
-    } catch (err) {
-      if (err.code !== 'ENOENT') {
-        throw err;
-      }
+    if (!(await deleteFileIfExists(projectListPath, 'projectList.json already exists.')) ||
+        !(await deleteFileIfExists(csvPath, 'projectDetails.csv already exists.'))) {
+      return;
     }
 
-    if (fileExists) {
-      const answer = await askQuestion('projectList.json already exists. Do you want to delete it? [ yes | no ]: ');
-      if (!['yes', 'y'].includes(answer.toLowerCase())) {
-        console.log('Exiting script without making changes.');
-        rl.close();
-        return;
-      }
-      await fs.unlink(projectListPath);
-      console.log('Existing projectList.json file deleted.');
-    }
-
-    // Check if projectList.csv already exists
-    fileExists = false;
-    try {
-      await fs.access(csvPath);
-      fileExists = true;
-    } catch (err) {
-      if (err.code !== 'ENOENT') {
-        throw err;
-      }
-    }
-
-    if (fileExists) {
-      const answer = await askQuestion('projectList.csv already exists. Do you want to delete it? [ yes | no ]: ');
-      if (!['yes', 'y'].includes(answer.toLowerCase())) {
-        console.log('Exiting script without making changes.');
-        rl.close();
-        return;
-      }
-      await fs.unlink(csvPath);
-      console.log('Existing projectList.csv file deleted.');
-    }
-
-    // Read config from config.json
     const configData = await fs.readFile(configPath, 'utf8');
     const config = JSON.parse(configData);
 
-    // Replace {customer} placeholder in URLs
     const authUrl = config.authUrlTemplate.replace('{customer}', config.customer);
     const authUrlV2 = config.authUrlV2Template.replace('{customer}', config.customer);
     const projectsUrl = config.projectsUrlTemplate.replace('{customer}', config.customer);
     const baseProjectsUrl = projectsUrl.split('?')[0];
+    const usersUrl = 'https://demo.polaris.synopsys.com/api/auth/v2/users';
 
     let authConfig;
 
-    // Check if password or API key (access token) is provided and configure the auth request
     if (config.password && config.password.trim() !== "") {
       const authData = new URLSearchParams();
       authData.append('email', config.email);
@@ -165,13 +152,11 @@ const fetchProjectsWithAuth = async () => {
     }
 
     console.log('Sending authentication request...');
-    // Request to retrieve JWT token
     const authResponse = await axios.request(authConfig);
     console.log('Authentication response received:', authResponse.status, authResponse.statusText);
 
     let token;
 
-    // Extract the token from the set-cookie header or response body
     const setCookieHeader = authResponse.headers['set-cookie'];
     if (setCookieHeader) {
       const tokenCookie = setCookieHeader.find(cookie => cookie.startsWith('access_token='));
@@ -188,17 +173,14 @@ const fetchProjectsWithAuth = async () => {
       throw new Error('No access token found in the response.');
     }
 
-    // Initialize variables for pagination
     let offset = 0;
     const limit = 5;
     let allProjects = [];
     let moreProjects = true;
 
-    // Loop to fetch all projects with pagination
     while (moreProjects) {
       const projectsUrlWithPagination = `${baseProjectsUrl}?page[limit]=${limit}&page[offset]=${offset}`;
 
-      // Config for fetching projects
       const projectsConfig = {
         method: 'get',
         maxBodyLength: Infinity,
@@ -210,7 +192,6 @@ const fetchProjectsWithAuth = async () => {
       };
 
       console.log(`Fetching projects with offset=${offset}...`);
-      // Request to fetch projects
       const projectsResponse = await axios.request(projectsConfig);
       console.log('Projects response received:', projectsResponse.status, projectsResponse.statusText);
 
@@ -223,7 +204,6 @@ const fetchProjectsWithAuth = async () => {
 
         allProjects = [...allProjects, ...formattedProjects];
 
-        // Check if there are more projects to fetch
         moreProjects = projectsData.length === limit;
         offset += limit;
       } else {
@@ -233,14 +213,66 @@ const fetchProjectsWithAuth = async () => {
     }
 
     const jsonContent = JSON.stringify(allProjects, null, 2);
-
-    // Write JSON content to file
     await fs.writeFile(projectListPath, jsonContent, 'utf8');
     console.log('Project list has been saved to projectList.json');
 
-    // Extract user details from each project
+    // Fetching all users and their groups
+    offset = 0;
+    const userLimit = 50;
     let allUsers = [];
-    let allGroups = [];
+    let allGroups = {};
+
+    let moreUsers = true;
+
+    while (moreUsers) {
+      const usersUrlWithPagination = `${usersUrl}?page[limit]=${userLimit}&page[offset]=${offset}`;
+
+      const usersConfig = {
+        method: 'get',
+        maxBodyLength: Infinity,
+        url: usersUrlWithPagination,
+        headers: {
+          'accept': 'application/vnd.api+json',
+          'Authorization': `Bearer ${token}`
+        }
+      };
+
+      console.log(`Fetching users with offset=${offset}...`);
+      const usersResponse = await axios.request(usersConfig);
+      console.log('Users response received:', usersResponse.status, usersResponse.statusText);
+
+      if (usersResponse.status === 200) {
+        const usersData = usersResponse.data.data;
+
+        const formattedUsers = usersData.map(user => ({
+          id: user.id,
+          name: user.attributes.name,
+          email: user.attributes.email,
+          groupIds: user.relationships.groups.data.map(group => group.id)
+        }));
+
+        allUsers = [...allUsers, ...formattedUsers];
+
+        moreUsers = usersData.length === userLimit;
+        offset += userLimit;
+      } else {
+        console.error(`HTTP Error: ${usersResponse.status} - ${usersResponse.statusText}`);
+        moreUsers = false;
+      }
+    }
+
+    // Group users by their group IDs
+    for (const user of allUsers) {
+      for (const groupId of user.groupIds) {
+        if (!allGroups[groupId]) {
+          allGroups[groupId] = [];
+        }
+        allGroups[groupId].push(user);
+      }
+    }
+
+    // Fetch and correlate project groups and users
+    let projectDetails = [];
 
     for (const project of allProjects) {
       const roleAssignmentsUrl = `https://demo.polaris.synopsys.com/api/auth/v2/role-assignments?filter%5Brole-assignments%5D%5Bobject%5D%5B%24eq%5D=urn%3Ax-swip%3Aprojects%3A${project.id}&include%5Brole-assignments%5D%5B%5D=role&include%5Brole-assignments%5D%5B%5D=user&include%5Brole-assignments%5D%5B%5D=group`;
@@ -262,54 +294,85 @@ const fetchProjectsWithAuth = async () => {
       if (roleAssignmentsResponse.status === 200) {
         const groups = roleAssignmentsResponse.data.included.filter(item => item.type === 'groups');
         const users = roleAssignmentsResponse.data.included.filter(item => item.type === 'users').map(user => ({
-          projectName: project.name,
           projectId: project.id,
-          name: user.attributes.name,
-          email: user.attributes.email,
-          group: groups.find(group => group.id === user.relationships.groups.data[0]?.id)?.attributes.groupname || 'N/A'
+          projectName: project.name,
+          userName: user.attributes.name,
+          userEmail: user.attributes.email,
+          groupId: user.relationships.groups.data[0]?.id || 'N/A'
         }));
 
-        allUsers = [...allUsers, ...users];
-        allGroups = [...allGroups, ...groups];
+        let groupMembers = {};
+
+        for (const group of groups) {
+          groupMembers[group.id] = {
+            groupName: group.attributes.groupname,
+            members: allGroups[group.id] || []
+          };
+        }
+
+        let individualUsers = users.filter(user => user.groupId === 'N/A');
+
+        projectDetails.push({
+          projectId: project.id,
+          projectName: project.name,
+          groups: groupMembers,
+          individualUsers: individualUsers.map(user => ({ name: user.userName, email: user.userEmail }))
+        });
       } else {
         console.error(`HTTP Error: ${roleAssignmentsResponse.status} - ${roleAssignmentsResponse.statusText}`);
       }
     }
 
-    const usersJsonContent = JSON.stringify(allUsers, null, 2);
+    // Prepare CSV data
+    let csvData = [];
 
-    // Write JSON content to file
-    await fs.writeFile('./usersList.json', usersJsonContent, 'utf8');
-    console.log('User list has been saved to usersList.json');
+    for (const project of projectDetails) {
+      for (const groupId in project.groups) {
+        const group = project.groups[groupId];
+        group.members.forEach(member => {
+          csvData.push({
+            projectId: project.projectId,
+            projectName: project.projectName,
+            groupName: group.groupName,
+            memberName: member.name,
+            memberEmail: member.email,
+            individualUsers: ''
+          });
+        });
+      }
 
-    // Write CSV content to file
+      project.individualUsers.forEach(user => {
+        csvData.push({
+          projectId: project.projectId,
+          projectName: project.projectName,
+          groupName: 'N/A',
+          memberName: '',
+          memberEmail: '',
+          individualUsers: `${user.name}, ${user.email}`
+        });
+      });
+    }
+
     const csvWriter = createObjectCsvWriter({
-      path: './usersList.csv',
+      path: csvPath,
       header: [
-        { id: 'projectName', title: 'Project Name' },
-        { id: 'projectId', title: 'Project ID' },
-        { id: 'name', title: 'Name' },
-        { id: 'email', title: 'Email' },
-        { id: 'group', title: 'Group' }
+        { id: 'projectId', title: 'PROJECT ID' },
+        { id: 'projectName', title: 'PROJECT NAME' },
+        { id: 'groupName', title: 'GROUP NAME' },
+        { id: 'memberName', title: 'MEMBER NAME' },
+        { id: 'memberEmail', title: 'MEMBER EMAIL' },
+        { id: 'individualUsers', title: 'INDIVIDUAL USERS IN A PROJECT' }
       ]
     });
 
-    await csvWriter.writeRecords(allUsers);
-    console.log('User list has been saved to usersList.csv');
-
-    // Extract unique groups and write to a separate file
-    const uniqueGroups = Array.from(new Set(allGroups.map(group => group.attributes.groupname)));
-    const groupsJsonContent = JSON.stringify(uniqueGroups, null, 2);
-    await fs.writeFile('./groupsList.json', groupsJsonContent, 'utf8');
-    console.log('Group list has been saved to groupsList.json');
+    await csvWriter.writeRecords(csvData);
+    console.log('Project details have been saved to projectDetails.csv');
 
   } catch (error) {
     if (error.response) {
-      // Handle errors from the server
       console.error(`HTTP Error: ${error.response.status} - ${error.response.statusText}`);
       console.error('Response data:', error.response.data);
     } else {
-      // Handle other errors
       console.error('Error:', error.message);
     }
   } finally {
