@@ -46,6 +46,10 @@
  *          
  *          May 21, 2024 -- Initial build
  *                  -- David Nester (dnester@synopsys.com)
+ *          
+ *          May 28, 2024 -- David Nester
+ *                  -- Addition of pulling group information for all users.   There are three files created
+ *                     (grouplist.json, userlist.json, userlist.csv)
  * 
  * ==========================================================================================================
  */
